@@ -1,0 +1,133 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Memori Mini App check (throwaway, fake data)</title>
+<script>
+// Captured before Telegram's own script runs, so a rewrite by the SDK cannot hide what arrived.
+window.__early = { href: location.href, hash: location.hash, search: location.search };
+</script>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  body { font: 15px/1.4 sans-serif; margin: 12px; }
+  button { font-size: 18px; padding: 12px 20px; margin: 8px 0; }
+  pre { white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+</style>
+</head>
+<body>
+<h3>Check page: fake data only</h3>
+<div id="mode"></div>
+<button id="save" disabled>Save</button>
+<pre id="out">loading...</pre>
+<script>
+(function () {
+  var MODE = (new URLSearchParams(window.__early.search).get('m')) || '?';
+  var TARGET = MODE === 'a' ? 4096 : 4097;
+  var out = document.getElementById('out');
+  var info = null;
+  var tg = window.Telegram && window.Telegram.WebApp;
+
+  function parseParams(s) {
+    var o = {};
+    s.replace(/^#/, '').split('&').forEach(function (part) {
+      if (!part) return;
+      var i = part.indexOf('=');
+      o[i < 0 ? part : part.slice(0, i)] = i < 0 ? '' : part.slice(i + 1);
+    });
+    return o;
+  }
+  function b64urlToText(s) {
+    s = s.replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    var bin = atob(s), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  }
+  function hex(buf) {
+    return Array.prototype.map.call(new Uint8Array(buf), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+  }
+  function bytesOf(s) { return new TextEncoder().encode(s).length; }
+
+  async function readback() {
+    var early = parseParams(window.__early.hash), now = parseParams(location.hash);
+    var src = early.t !== undefined ? early : now;
+    var r = {
+      mode: MODE,
+      early_hash_chars: window.__early.hash.length,
+      now_hash_chars: location.hash.length,
+      early_keys: Object.keys(early),
+      now_keys: Object.keys(now),
+      ours_in_early: early.t !== undefined,
+      ours_in_now: now.t !== undefined,
+      tgWebAppData_in_early: early.tgWebAppData !== undefined,
+      tgWebAppData_in_now: now.tgWebAppData !== undefined,
+      expected_len: src.n ? parseInt(src.n, 10) : null,
+      platform: tg ? tg.platform : null,
+      tg_version: tg ? tg.version : null,
+      ua: navigator.userAgent.slice(0, 120)
+    };
+    if (src.t !== undefined) {
+      try {
+        var text = b64urlToText(src.t);
+        var digest = hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
+        r.t_chars = src.t.length;
+        r.decoded_bytes = bytesOf(text);
+        r.len_ok = String(r.decoded_bytes) === src.n;
+        r.sha256_16 = digest.slice(0, 16);
+        r.sha_ok = digest.slice(0, 16) === src.h;
+        JSON.parse(text);
+        r.json_ok = true;
+      } catch (e) {
+        r.decode_error = String(e && e.message || e);
+      }
+    }
+    return r;
+  }
+
+  function build(target, extra) {
+    var o = { check: '2', mode: MODE, target_bytes: target, readback: info, extra: extra || null, pad: '' };
+    var base = bytesOf(JSON.stringify(o));
+    if (base > target) { o.readback = { trimmed: true, ours_in_early: info.ours_in_early, sha_ok: info.sha_ok }; base = bytesOf(JSON.stringify(o)); }
+    o.pad = new Array(target - base + 1).join('x');
+    var s = JSON.stringify(o);
+    if (bytesOf(s) !== target) throw new Error('payload size ' + bytesOf(s) + ' != ' + target);
+    return s;
+  }
+  function small(extra) {
+    var o = { check: '2', mode: MODE, target_bytes: 0, readback: info, extra: extra };
+    return JSON.stringify(o);
+  }
+  function show(msg) { out.textContent += '\n' + msg; }
+
+  document.getElementById('mode').textContent = 'mode ' + MODE + ': Save sends ' + TARGET + ' bytes';
+
+  document.getElementById('save').addEventListener('click', function () {
+    var sdkErr = null, rawErr = null, route = 'sdk';
+    var payload = build(TARGET, {});
+    try { tg.sendData(payload); show('sdk sendData returned without error'); }
+    catch (e) { sdkErr = String(e && e.message || e); show('sdk sendData threw: ' + sdkErr); }
+    if (sdkErr && TARGET > 4096) {
+      route = 'raw';
+      try {
+        window.Telegram.WebView.postEvent('web_app_data_send', false, { data: build(TARGET, { sdk_error: sdkErr, route: 'raw' }) });
+        show('raw web_app_data_send posted');
+      } catch (e) { rawErr = String(e && e.message || e); show('raw post threw: ' + rawErr); }
+    }
+    setTimeout(function () {
+      show('still open after 3 s, sending a small report');
+      try { tg.sendData(small({ still_open_after_send: true, route: route, sdk_error: sdkErr, raw_error: rawErr })); }
+      catch (e) { show('small report threw: ' + e); }
+    }, 3000);
+  });
+
+  readback().then(function (r) {
+    info = r;
+    out.textContent = JSON.stringify(r, null, 1);
+    document.getElementById('save').disabled = false;
+    if (tg) { tg.ready(); }
+  });
+})();
+</script>
+</body>
+</html>
